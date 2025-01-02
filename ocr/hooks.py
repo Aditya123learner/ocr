@@ -1,10 +1,12 @@
 app_name = "ocr"
 app_title = "Optical Character Recognition"
-app_publisher = "soundsofnation29@gmail.com"
+app_publisher = "Ali Raza"
 app_description = "Optical Character Recognition tool for erpnext"
 app_email = "soundsofnation29@gmail.com"
 app_license = "mit"
-
+doctype_js = {
+    "Purchase Receipt": "public/js/purchase_receipt.js"
+}
 # Apps
 # ------------------
 
