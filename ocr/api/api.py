@@ -1,4 +1,3 @@
-import pytesseract
 import re
 import frappe
 from frappe.utils.file_manager import get_file_path
@@ -7,6 +6,7 @@ from frappe.utils.file_manager import get_file_path
 @frappe.whitelist()
 def extract_item_level_data(docname, item_idx):
     try:
+        import pytesseract
         # Fetch the Purchase Receipt document
         doc = frappe.get_doc("Purchase Receipt", docname)
         item_idx=int(item_idx)
