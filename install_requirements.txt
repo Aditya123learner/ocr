@@ -1,0 +1,14 @@
+# Basic OCR requirements
+tesseract-ocr
+libtesseract-dev
+
+# Language packs - uncomment the ones you need
+# tesseract-ocr-eng  # English
+# tesseract-ocr-deu  # German
+# tesseract-ocr-fra  # French
+# tesseract-ocr-spa  # Spanish
+
+# Additional dependencies for image processing
+libleptonica-dev
+libimage-exiftool-perl
+
