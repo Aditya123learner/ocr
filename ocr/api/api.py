@@ -2,6 +2,7 @@ import pytesseract
 import re
 import frappe
 from frappe.utils.file_manager import get_file_path
+from PIL import Image
 
 
 @frappe.whitelist()
@@ -26,9 +27,15 @@ def extract_item_level_data(docname, item_idx):
 
         # Get the file path
         file_path = get_file_path(file_url)
+
+        # Optimize the image
+        with Image.open(file_path) as img:
+            img = img.convert("L")  # Convert to grayscale
+            img = img.resize((800, 800))  # Resize for faster OCR processing
+
         
         # Extract text using pytesseract
-        extracted_text = pytesseract.image_to_string(file_path)
+        extracted_text = pytesseract.image_to_string(img)
         raw_text = extracted_text
 
         # Extract Lot No. (either 4-digit or 6-digit)
