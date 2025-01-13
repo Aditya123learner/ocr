@@ -84,7 +84,7 @@ frappe.ui.form.on('Purchase Receipt Item', {
 
             // Call the backend method for text extraction
             frappe.call({
-                method: 'ocr_app.api.extract_item_level_data',
+                method: 'ocr.api.api.extract_item_level_data',
                 args: {
                     docname: frm.doc.name,
                     item_idx: row.idx // Pass the correct item index
