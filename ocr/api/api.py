@@ -138,10 +138,30 @@ def extract_item_level_data(docname, item_idx):
             reel_no = reel_match.group(1).replace(" ", "").strip()
 
         # Extract Weight - Looking for number after "Wt (In Kgs):"
-        weight_pattern = r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d+)"
-        weight_match = re.search(weight_pattern, extracted_text, re.IGNORECASE)
-        if weight_match:
-            weight = weight_match.group(1).strip()
+        weight_patterns = [
+            r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d+)",  # Standard format
+            r"Wt\s*\(\s*In\s*Kgs\s*\)\s*:?\s*(\d+)",  # Alternative spacing
+            r".*?Wt.*?:\s*(\d+)",  # Simplified pattern
+            r".*?(?:Wt|Weight).*?(\d+)(?:\s*(?:KG|Kgs|kg))?",  # Very flexible pattern
+        ]
+
+        # Try each weight pattern until we find a match
+        for pattern in weight_patterns:
+            weight_match = re.search(pattern, extracted_text, re.IGNORECASE)
+            if weight_match:
+                weight = weight_match.group(1).strip()
+                # Validate weight is reasonable (e.g., not a lot number)
+                if weight and weight != lot_no:
+                    break
+
+        # If weight still matches lot number, try to find the last number in a specific section
+        if weight == lot_no or not weight:
+            # Look for weight in the lower half of the text
+            text_lines = extracted_text.split('\n')
+            lower_half = '\n'.join(text_lines[len(text_lines)//2:])
+            weight_match = re.search(r'.*?(\d+)(?:\s*(?:KG|Kgs|kg))?(?:\s*$|\s*\()', lower_half)
+            if weight_match:
+                weight = weight_match.group(1).strip()
 
         # Fallback patterns if main patterns fail
         if not lot_no:
@@ -160,9 +180,6 @@ def extract_item_level_data(docname, item_idx):
 
         if not weight:
             # Look for last number in the text
-            fallback_weight = re.search(r".*?(\d+)(?!.*\d)", extracted_text)
-            if fallback_weight:
-                weight = fallback_weight.group(1)
             missing_fields.append("Weight")
 
         # Update document fields
