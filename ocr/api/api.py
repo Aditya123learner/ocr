@@ -83,84 +83,107 @@ from PIL import Image, ImageEnhance, ImageFilter
 @frappe.whitelist()
 def extract_item_level_data(docname, item_idx):
     try:
-        # Fetch the Purchase Receipt document
+        # Basic setup code remains same until image processing
         doc = frappe.get_doc("Purchase Receipt", docname)
         item_idx = int(item_idx)
         item = next((i for i in doc.items if i.idx == item_idx), None)
-
+        
         if not item:
             return {"success": False, "error": "Item not found."}
 
-        # Log the row being processed
-        frappe.logger().info(f"Processing row: {item_idx} with image: {item.custom_attach_image}")
-
-        # Get the file URL for the image
         file_url = item.custom_attach_image
         if not file_url:
             return {"success": False, "error": "Please upload an image before extracting data."}
 
-        # Get the file path
         file_path = get_file_path(file_url)
-
-        # Optimize the image
+        
+        # Enhanced image processing specifically for these labels
         with Image.open(file_path) as img:
-            img = img.convert("L")  # Convert to grayscale
-            img = img.filter(ImageFilter.SHARPEN)  # Apply sharpening filter
+            # Convert to grayscale
+            img = img.convert("L")
+            
+            # Enhance contrast - these labels are black text on white
             enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2)  # Increase contrast
-            img = img.resize((800, 800))  # Resize for consistent OCR
+            img = enhancer.enhance(2.5)  # Increased contrast for better text recognition
+            
+            # Sharpen the image
+            img = img.filter(ImageFilter.SHARPEN)
+            
+            # Resize while maintaining aspect ratio
+            img.thumbnail((1200, 1200))  # Increased resolution for better accuracy
 
-        # Extract text using pytesseract
-        extracted_text = pytesseract.image_to_string(img)
-        raw_text = extracted_text  # Store raw OCR text for fallback checks
+        # Configure tesseract for printed text
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:.()/ABCDEFGHIJKLMNOPQRSTUVWXYZ '
+        extracted_text = pytesseract.image_to_string(img, config=custom_config)
+        
+        # Store raw text for logging
+        raw_text = extracted_text
 
-        # Helper function for raw text fallback
-        def fallback_extract(field_name, primary_pattern, fallback_pattern=None):
-            # Try the primary pattern
-            match = re.search(primary_pattern, extracted_text, re.IGNORECASE)
-            if match:
-                return match.group(1).replace(" ", "")  # Remove spaces
+        # More specific patterns based on the sample images
+        lot_no = None
+        reel_no = None
+        weight = None
+        missing_fields = []
 
-            # Try the fallback pattern in raw text
-            if fallback_pattern:
-                fallback_match = re.search(fallback_pattern, raw_text, re.IGNORECASE)
-                if fallback_match:
-                    return fallback_match.group(1).replace(" ", "")
+        # Extract Lot No. - Looking for 6-7 digit numbers after "Lot No."
+        lot_pattern = r"Lot\s*No\.\s*:\s*(\d{6,7})"
+        lot_match = re.search(lot_pattern, extracted_text, re.IGNORECASE)
+        if lot_match:
+            lot_no = lot_match.group(1).strip()
 
-            # Log fallback failure
-            frappe.logger().warning(f"Could not extract {field_name} with fallback.")
-            return None
+        # Extract Reel No. - Looking for pattern like "XXX XXXXX"
+        reel_pattern = r"REEL\s*No\.\s*:\s*(\d{3}\s*\d{5})"
+        reel_match = re.search(reel_pattern, extracted_text, re.IGNORECASE)
+        if reel_match:
+            reel_no = reel_match.group(1).replace(" ", "").strip()
 
-        # Extract Lot No. (either 4-digit or 6-digit, with fallback)
-        lot_no = fallback_extract(
-            "Lot No.",
-            r"Lot\s*No\.?\s*:\s*(\d{4,6})",
-            fallback_pattern=r"\b\d{4,6}\b"  # Fallback: Find first 4-6 digit number in raw text
-        )
+        # Extract Weight - Looking for number after "Wt (In Kgs):"
+        weight_pattern = r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d+)"
+        weight_match = re.search(weight_pattern, extracted_text, re.IGNORECASE)
+        if weight_match:
+            weight = weight_match.group(1).strip()
 
-        # Extract Reel No. (including spaces within numbers, with fallback)
-        reel_no = fallback_extract(
-            "Reel No.",
-            r"Reel\s*No\.?\s*:\s*([\d\s]+)",
-            fallback_pattern=r"\b\d{5,}\b"  # Fallback: Find first long number sequence in raw text
-        )
+        # Fallback patterns if main patterns fail
+        if not lot_no:
+            # Look for any 6-digit number
+            fallback_lot = re.search(r"\b(\d{6})\b", extracted_text)
+            if fallback_lot:
+                lot_no = fallback_lot.group(1)
+            missing_fields.append("Lot No")
 
-        # Extract Weight (Wt in Kgs, with fallback)
-        weight_match = re.search(r"Wt\s*\(In\s*Kgs\)\s*:?\s*(\d+)", extracted_text, re.IGNORECASE)
-        weight = weight_match.group(1) if weight_match else None
-        if not weight:  # Fallback: Use the last detected number in raw text
-            all_numbers = re.findall(r"\d+", raw_text)
-            weight = all_numbers[-1] if all_numbers else None
+        if not reel_no:
+            # Look for any 8-9 digit number
+            fallback_reel = re.search(r"\b(\d{3}\d{5})\b", extracted_text)
+            if fallback_reel:
+                reel_no = fallback_reel.group(1)
+            missing_fields.append("Reel No")
 
-        # Update the item fields
-        item.custom_lot_no = lot_no
-        item.custom_reel_no = reel_no
-        item.qty = weight
+        if not weight:
+            # Look for last number in the text
+            fallback_weight = re.search(r".*?(\d+)(?!.*\d)", extracted_text)
+            if fallback_weight:
+                weight = fallback_weight.group(1)
+            missing_fields.append("Weight")
 
-        # Ensure Accepted + Rejected Qty matches Received Qty
-        item.received_qty = weight  # Assume full acceptance, adjust as needed
-        item.rejected_qty = 0  # No rejection, adjust as needed
+        # Update document fields
+        if lot_no:
+            item.custom_lot_no = lot_no
+        if reel_no:
+            item.custom_reel_no = reel_no
+        if weight:
+            item.qty = float(weight)
+            item.received_qty = float(weight)
+            item.rejected_qty = 0
+
         doc.save(ignore_version=True)
+
+        # Log the extracted text for debugging
+        frappe.logger().debug(f"Raw OCR Text: {raw_text}")
+        frappe.logger().debug(f"Extracted: Lot={lot_no}, Reel={reel_no}, Weight={weight}")
+
+        message = ""
+        if missing_fields:
+            message = f"Please manually enter the following fields: {', '.join(missing_fields)}"
 
         return {
             "success": True,
@@ -168,6 +191,10 @@ def extract_item_level_data(docname, item_idx):
             "reel_no": reel_no,
             "qty": weight,
             "raw_text": raw_text,
+            "message": message,
+            "missing_fields": missing_fields
         }
+
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        frappe.log_error(f"OCR Error: {str(e)}\nRaw Text: {extracted_text}", "OCR Processing Error")
+        return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
