@@ -23,4 +23,5 @@ build-backend = "flit_core.buildapi"
 packages = [
     "tesseract-ocr",
     "libtesseract-dev"  # Add this if required
+    "ExifRead"
 ]
