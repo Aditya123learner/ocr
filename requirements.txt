@@ -34,6 +34,7 @@ email-reply-parser==0.5.12
 et_xmlfile==2.0.0
 exceptiongroup==1.2.2
 executing==2.1.0
+ExifRead==3.0.0
 filelock==3.13.4
 filetype==1.2.0
 fonttools==4.55.0
