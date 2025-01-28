@@ -83,7 +83,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 @frappe.whitelist()
 def extract_item_level_data(docname, item_idx):
     try:
-        # Basic setup code remains same until image processing
+        # Basic setup
         doc = frappe.get_doc("Purchase Receipt", docname)
         item_idx = int(item_idx)
         item = next((i for i in doc.items if i.idx == item_idx), None)
@@ -97,89 +97,90 @@ def extract_item_level_data(docname, item_idx):
 
         file_path = get_file_path(file_url)
         
-        # Enhanced image processing specifically for these labels
+        # Enhanced image processing for camera captures
         with Image.open(file_path) as img:
             # Convert to grayscale
             img = img.convert("L")
             
-            # Enhance contrast - these labels are black text on white
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2.5)  # Increased contrast for better text recognition
+            # Auto-rotate based on EXIF data if present
+            try:
+                import exifread
+                with open(file_path, 'rb') as f:
+                    tags = exifread.process_file(f)
+                    if 'Image Orientation' in tags:
+                        orientation = tags['Image Orientation'].values[0]
+                        if orientation == 3:
+                            img = img.rotate(180, expand=True)
+                        elif orientation == 6:
+                            img = img.rotate(270, expand=True)
+                        elif orientation == 8:
+                            img = img.rotate(90, expand=True)
+            except:
+                pass
             
-            # Sharpen the image
+            # Enhance image
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(3.0)
+            
+            brightness_enhancer = ImageEnhance.Brightness(img)
+            img = brightness_enhancer.enhance(1.2)
+            
+            # Sharpen
             img = img.filter(ImageFilter.SHARPEN)
             
-            # Resize while maintaining aspect ratio
-            img.thumbnail((1200, 1200))  # Increased resolution for better accuracy
+            # Resize for better OCR
+            width, height = img.size
+            scale_factor = 1.5
+            new_size = (int(width * scale_factor), int(height * scale_factor))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
 
-        # Configure tesseract for printed text
-        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:.()/ABCDEFGHIJKLMNOPQRSTUVWXYZ '
+        # Configure tesseract
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:.()/ABCDEFGHIJKLMNOPQRSTUVWXYZ -c tessedit_do_invert=0'
         extracted_text = pytesseract.image_to_string(img, config=custom_config)
         
         # Store raw text for logging
         raw_text = extracted_text
 
-        # More specific patterns based on the sample images
+        # Initialize variables
         lot_no = None
         reel_no = None
         weight = None
         missing_fields = []
 
-        # Extract Lot No. - Looking for 6-7 digit numbers after "Lot No."
+        # Extract Lot No.
         lot_pattern = r"Lot\s*No\.\s*:\s*(\d{6,7})"
         lot_match = re.search(lot_pattern, extracted_text, re.IGNORECASE)
         if lot_match:
             lot_no = lot_match.group(1).strip()
 
-        # Extract Reel No. - Looking for pattern like "XXX XXXXX"
+        # Extract Reel No.
         reel_pattern = r"REEL\s*No\.\s*:\s*(\d{3}\s*\d{5})"
         reel_match = re.search(reel_pattern, extracted_text, re.IGNORECASE)
         if reel_match:
             reel_no = reel_match.group(1).replace(" ", "").strip()
 
-        # Extract Weight - Looking for number after "Wt (In Kgs):"
-        weight_patterns = [
-            r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d+)",  # Standard format
-            r"Wt\s*\(\s*In\s*Kgs\s*\)\s*:?\s*(\d+)",  # Alternative spacing
-            r".*?Wt.*?:\s*(\d+)",  # Simplified pattern
-            r".*?(?:Wt|Weight).*?(\d+)(?:\s*(?:KG|Kgs|kg))?",  # Very flexible pattern
-        ]
+        # Simplified weight extraction
+        # First split text into lines
+        lines = extracted_text.split('\n')
+        for line in lines:
+            # Look for line containing weight information
+            if 'Wt' in line or 'KGS' in line.upper():
+                # Extract the number from this line
+                numbers = re.findall(r'\d+', line)
+                if numbers:
+                    # Take the last number in the line as weight
+                    potential_weight = numbers[-1]
+                    # Verify it's not the lot number or reel number
+                    if potential_weight != lot_no and (not reel_no or potential_weight not in reel_no):
+                        weight = potential_weight
+                        break
 
-        # Try each weight pattern until we find a match
-        for pattern in weight_patterns:
-            weight_match = re.search(pattern, extracted_text, re.IGNORECASE)
-            if weight_match:
-                weight = weight_match.group(1).strip()
-                # Validate weight is reasonable (e.g., not a lot number)
-                if weight and weight != lot_no:
-                    break
-
-        # If weight still matches lot number, try to find the last number in a specific section
-        if weight == lot_no or not weight:
-            # Look for weight in the lower half of the text
-            text_lines = extracted_text.split('\n')
-            lower_half = '\n'.join(text_lines[len(text_lines)//2:])
-            weight_match = re.search(r'.*?(\d+)(?:\s*(?:KG|Kgs|kg))?(?:\s*$|\s*\()', lower_half)
-            if weight_match:
-                weight = weight_match.group(1).strip()
-
-        # Fallback patterns if main patterns fail
+        # Track missing fields
         if not lot_no:
-            # Look for any 6-digit number
-            fallback_lot = re.search(r"\b(\d{6})\b", extracted_text)
-            if fallback_lot:
-                lot_no = fallback_lot.group(1)
             missing_fields.append("Lot No")
-
         if not reel_no:
-            # Look for any 8-9 digit number
-            fallback_reel = re.search(r"\b(\d{3}\d{5})\b", extracted_text)
-            if fallback_reel:
-                reel_no = fallback_reel.group(1)
             missing_fields.append("Reel No")
-
         if not weight:
-            # Look for last number in the text
             missing_fields.append("Weight")
 
         # Update document fields
@@ -198,9 +199,13 @@ def extract_item_level_data(docname, item_idx):
         frappe.logger().debug(f"Raw OCR Text: {raw_text}")
         frappe.logger().debug(f"Extracted: Lot={lot_no}, Reel={reel_no}, Weight={weight}")
 
-        message = ""
         if missing_fields:
-            message = f"Please manually enter the following fields: {', '.join(missing_fields)}"
+    # Show message for each missing field
+         frappe.msgprint(
+            msg=f"Please manually enter the following fields: {', '.join(missing_fields)}",
+            title='Missing Fields',
+            indicator='orange'  # This will show an orange indicator
+        )
 
         return {
             "success": True,
