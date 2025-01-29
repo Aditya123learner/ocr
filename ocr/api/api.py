@@ -78,7 +78,9 @@ import pytesseract
 import re
 import frappe
 from frappe.utils.file_manager import get_file_path
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageFilter
+import cv2
+import numpy as np
 
 @frappe.whitelist()
 def extract_item_level_data(docname, item_idx):
@@ -87,86 +89,123 @@ def extract_item_level_data(docname, item_idx):
         doc = frappe.get_doc("Purchase Receipt", docname)
         item_idx = int(item_idx)
         item = next((i for i in doc.items if i.idx == item_idx), None)
-        
+
         if not item:
             return {"success": False, "error": "Item not found."}
-        
+
         # Log the row being processed
         frappe.logger().info(f"Processing row: {item_idx} with image: {item.custom_attach_image}")
-        
+
         # Get the file URL for the image
         file_url = item.custom_attach_image
         if not file_url:
             return {"success": False, "error": "Please upload an image before extracting data."}
-        
+
         # Get the file path
         file_path = get_file_path(file_url)
-        
-        # Open and preprocess image using PIL
+
+        # Enhanced image processing
         with Image.open(file_path) as img:
             # Convert to grayscale
-            img = img.convert('L')
-            
+            img = img.convert("L")
             # Enhance contrast
             enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2.0)
-            
-            # Enhance sharpness
-            enhancer = ImageEnhance.Sharpness(img)
-            img = enhancer.enhance(2.0)
-            
-            # Resize for better OCR
-            img = img.resize((int(img.size[0]*1.5), int(img.size[1]*1.5)), Image.Resampling.LANCZOS)
-            
-            # Extract text using pytesseract with custom configuration
-            custom_config = '--oem 3 --psm 6'
-            extracted_text = pytesseract.image_to_string(img, config=custom_config)
-            raw_text = extracted_text
-        
-        # Enhanced regex patterns for camera-captured images
-        lot_no_match = re.search(r"[LI]ot\s*[MNn]o\.?\s*:?\s*(\d{4,6})", extracted_text, re.IGNORECASE)
-        lot_no = lot_no_match.group(1) if lot_no_match else None
-        
-        reel_no_match = re.search(r"[RP]EEL\s*[MNn]o\.?\s*:?\s*([\d\s]+)", extracted_text, re.IGNORECASE)
-        reel_no = reel_no_match.group(1).replace(" ", "") if reel_no_match else None
-        
-        # More flexible weight pattern
+            img = enhancer.enhance(2.5)
+            # Sharpen image
+            img = img.filter(ImageFilter.SHARPEN)
+            # Resize
+            img.thumbnail((1200, 1200))
+
+        # Convert PIL image to OpenCV format for additional preprocessing
+        img_cv = np.array(img)
+        img_cv = cv2.adaptiveThreshold(img_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        img_cv = cv2.resize(img_cv, (1200, 1200))
+        img_pil = Image.fromarray(img_cv)
+
+        # Extract text using pytesseract with retries
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ./:()'
+        extracted_text = None
+        for psm in [6, 11, 3]:  # Retry with different PSM modes
+            try:
+                custom_config = f'--oem 3 --psm {psm}'
+                extracted_text = pytesseract.image_to_string(img_pil, config=custom_config)
+                if extracted_text:
+                    break
+            except Exception as e:
+                frappe.logger().warning(f"Error in OCR with PSM {psm}: {str(e)}")
+
+        if not extracted_text:
+            return {"success": False, "error": "OCR failed. Unable to extract text from image."}
+
+        raw_text = extracted_text
+
+        # Helper function for fallback extraction
+        def fallback_extract(field_name, primary_pattern, fallback_pattern=None):
+            match = re.search(primary_pattern, extracted_text, re.IGNORECASE)
+            if match:
+                return match.group(1).replace(" ", "")
+            if fallback_pattern:
+                fallback_match = re.search(fallback_pattern, raw_text, re.IGNORECASE)
+                if fallback_match:
+                    return fallback_match.group(1).replace(" ", "")
+            frappe.logger().warning(f"Could not extract {field_name} even with fallback.")
+            return None
+
+        # Extract Lot No.
+        lot_no = fallback_extract(
+            "Lot No.",
+            r"Lot\s*No\.\s*:\s*(\d{6,7})",
+            fallback_pattern=r"\b\d{6,7}\b"
+        )
+
+        # Extract Reel No.
+        reel_no = fallback_extract(
+            "Reel No.",
+            r"Reel\s*No\.\s*:\s*([\d\s]+)",
+            fallback_pattern=r"\b\d{5,}\b"
+        )
+
+        # Extract Weight
         weight_patterns = [
-            r"[WV]t\s*\(?[I1]n\s*Kgs?\)?\s*:?\s*(\d{1,3})",  # Standard format
-            r"[WV]eight\s*:?\s*(\d{1,3})",  # Alternative format
-            r"(\d{1,3})\s*[Kk]gs?"  # Last resort pattern
+            r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d{2,3})",
+            r"Wt\s*\(\s*In\s*Kgs\s*\)\s*:?\s*(\d+)",
+            r".*?Wt.*?:\s*(\d{2,3})",
+            r".*?(?:Wt|Weight).*?(\d+)(?:\s*(?:KG|Kgs|kg))?"
         ]
-        
         weight = None
         for pattern in weight_patterns:
             weight_match = re.search(pattern, extracted_text, re.IGNORECASE)
             if weight_match:
-                weight = weight_match.group(1)
-                break
+                weight = weight_match.group(1).strip()
+                if weight and weight != lot_no:
+                    break
 
-        if not any([lot_no, reel_no, weight]):
-            frappe.logger().error(f"OCR Raw Text: {raw_text}")
-            return {"success": False, "error": "Failed to extract required information from image"}
-        
-        # Update the item fields
-        item.custom_lot_no = lot_no
-        item.custom_reel_no = reel_no
-        item.qty = weight
-        
-        # Ensure Accepted + Rejected Qty matches Received Qty
-        item.received_qty = weight  # Assume full acceptance
-        item.rejected_qty = 0  # No rejection
-        
+        # Final fallback for weight
+        if not weight or weight == lot_no:
+            all_numbers = re.findall(r"\d+", raw_text)
+            weight = all_numbers[-1] if all_numbers else None
+
+        # Update document fields
+        if lot_no:
+            item.custom_lot_no = lot_no
+        if reel_no:
+            item.custom_reel_no = reel_no
+        if weight:
+            item.qty = float(weight)
+            item.received_qty = float(weight)
+            item.rejected_qty = 0
+
         doc.save(ignore_version=True)
-        
+
         return {
             "success": True,
             "lot_no": lot_no,
             "reel_no": reel_no,
             "qty": weight,
-            "raw_text": raw_text
+            "raw_text": raw_text,
         }
-        
+
     except Exception as e:
-        frappe.logger().error(f"OCR Error: {str(e)}")
-        return {"success": False, "error": str(e)}
+        frappe.log_error(f"OCR Error: {str(e)}\nRaw Text: {extracted_text if 'extracted_text' in locals() else ''}", "OCR Processing Error")
+        return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
+
