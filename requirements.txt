@@ -161,3 +161,6 @@ Whoosh==2.7.4
 xlrd==2.0.1
 zopfli==0.2.3.post1
 zxcvbn==4.4.28
+numpy==1.24.3
+opencv-python==4.8.1.78
+
