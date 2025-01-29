@@ -34,7 +34,6 @@ email-reply-parser==0.5.12
 et_xmlfile==2.0.0
 exceptiongroup==1.2.2
 executing==2.1.0
-ExifRead==3.0.0
 filelock==3.13.4
 filetype==1.2.0
 fonttools==4.55.0
@@ -162,7 +161,7 @@ Whoosh==2.7.4
 xlrd==2.0.1
 zopfli==0.2.3.post1
 zxcvbn==4.4.28
-numpy==1.24.3
+
 
 
 
