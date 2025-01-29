@@ -108,25 +108,21 @@ def extract_item_level_data(docname, item_idx):
 
         # Configure Tesseract for printed text OCR
         custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:.()/ABCDEFGHIJKLMNOPQRSTUVWXYZ '
-        extracted_text = pytesseract.image_to_string(img, config=custom_config)
+        ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
         
-        # Store raw text for logging
-        raw_text = extracted_text
-
-        # 🔹 Extract Lot No.
-        lot_pattern = r"Lot\s*No\.\s*:\s*(\d{6,7})"
-        lot_match = re.search(lot_pattern, extracted_text, re.IGNORECASE)
-        lot_no = lot_match.group(1).strip() if lot_match else None
-
-        # 🔹 Extract Reel No.
-        reel_pattern = r"REEL\s*No\.\s*:\s*(\d{3}\s*\d{5})"
-        reel_match = re.search(reel_pattern, extracted_text, re.IGNORECASE)
-        reel_no = reel_match.group(1).replace(" ", "").strip() if reel_match else None
-
-        # 🔹 Extract Weight (Only keeping direct pattern match)
-        weight_pattern = r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d{2,3})"
-        weight_match = re.search(weight_pattern, extracted_text, re.IGNORECASE)
-        weight = weight_match.group(1).strip() if weight_match else None
+        # Extract words and clean empty ones
+        words = [w.strip() for w in ocr_data['text'] if w.strip()]
+        
+        lot_no, reel_no, weight = None, None, None
+        
+        # Loop through words to find key data
+        for i, word in enumerate(words):
+            if "Lot" in word and i + 1 < len(words):
+                lot_no = words[i + 1] if words[i + 1].isdigit() else None
+            if "REEL" in word and i + 1 < len(words):
+                reel_no = words[i + 1].replace(" ", "") if words[i + 1].isdigit() else None
+            if "Wt" in word or "Kgs" in word:
+                weight = words[i + 1] if words[i + 1].isdigit() else None
 
         # Update document fields
         if lot_no:
@@ -141,7 +137,6 @@ def extract_item_level_data(docname, item_idx):
         doc.save(ignore_version=True)
 
         # Log extracted details
-        frappe.logger().debug(f"Raw OCR Text: {raw_text}")
         frappe.logger().debug(f"Extracted: Lot={lot_no}, Reel={reel_no}, Weight={weight}")
 
         return {
@@ -149,10 +144,8 @@ def extract_item_level_data(docname, item_idx):
             "lot_no": lot_no,
             "reel_no": reel_no,
             "qty": weight,
-            "raw_text": raw_text
         }
 
     except Exception as e:
-        frappe.log_error(f"OCR Error: {str(e)}\nRaw Text: {extracted_text}", "OCR Processing Error")
+        frappe.log_error(f"OCR Error: {str(e)}", "OCR Processing Error")
         return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
-
