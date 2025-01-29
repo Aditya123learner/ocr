@@ -78,9 +78,7 @@ import pytesseract
 import re
 import frappe
 from frappe.utils.file_manager import get_file_path
-from PIL import Image
-import cv2
-import numpy as np
+from PIL import Image, ImageEnhance
 
 @frappe.whitelist()
 def extract_item_level_data(docname, item_idx):
@@ -104,32 +102,26 @@ def extract_item_level_data(docname, item_idx):
         # Get the file path
         file_path = get_file_path(file_url)
         
-        # Read image with OpenCV for better preprocessing
-        img = cv2.imread(file_path)
-        if img is None:
-            return {"success": False, "error": "Failed to read image"}
+        # Open and preprocess image using PIL
+        with Image.open(file_path) as img:
+            # Convert to grayscale
+            img = img.convert('L')
             
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Enhance contrast
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-        
-        # Denoise
-        denoised = cv2.fastNlMeansDenoising(enhanced)
-        
-        # Thresholding to handle varying lighting conditions
-        thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-        
-        # Save preprocessed image temporarily
-        temp_path = "/tmp/preprocessed.png"
-        cv2.imwrite(temp_path, thresh)
-        
-        # Extract text using pytesseract with custom configuration
-        custom_config = '--oem 3 --psm 6'
-        extracted_text = pytesseract.image_to_string(Image.open(temp_path), config=custom_config)
-        raw_text = extracted_text
+            # Enhance contrast
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(2.0)
+            
+            # Enhance sharpness
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(2.0)
+            
+            # Resize for better OCR
+            img = img.resize((int(img.size[0]*1.5), int(img.size[1]*1.5)), Image.Resampling.LANCZOS)
+            
+            # Extract text using pytesseract with custom configuration
+            custom_config = '--oem 3 --psm 6'
+            extracted_text = pytesseract.image_to_string(img, config=custom_config)
+            raw_text = extracted_text
         
         # Enhanced regex patterns for camera-captured images
         lot_no_match = re.search(r"[LI]ot\s*[MNn]o\.?\s*:?\s*(\d{4,6})", extracted_text, re.IGNORECASE)
@@ -151,8 +143,9 @@ def extract_item_level_data(docname, item_idx):
             if weight_match:
                 weight = weight_match.group(1)
                 break
-        
+
         if not any([lot_no, reel_no, weight]):
+            frappe.logger().error(f"OCR Raw Text: {raw_text}")
             return {"success": False, "error": "Failed to extract required information from image"}
         
         # Update the item fields
