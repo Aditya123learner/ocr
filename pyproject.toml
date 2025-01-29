@@ -9,6 +9,8 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     "ExifRead~=3.0.0",
+    "numpy~=1.24.3",
+    "opencv-python~=4.8.1.78"
     # "frappe~=15.0.0" # Installed and managed by bench.
 ]
 
