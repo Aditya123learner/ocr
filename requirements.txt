@@ -75,7 +75,6 @@ num2words==0.5.13
 oauthlib==3.2.2
 -e git+https://github.com/Aditya123learner/ocr.git@c4f66075d2be4eac90825da7966592b261075205#egg=ocr
 openpyxl==3.1.5
-opencv-python-headless==4.5.5
 packaging==24.2
 parso==0.8.4
 passlib==1.7.4
