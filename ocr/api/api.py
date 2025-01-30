@@ -48,9 +48,9 @@ def extract_item_level_data(docname, item_idx):
         
 
         # Extract Weight (Wt in Kgs)
-        all_numbers = re.findall(r'\d+', extracted_text)  # Extract all numbers from the text
-        if len(all_numbers) > 1:
-            weight = all_numbers[-1]  # Last number as Weight
+        weight_pattern = r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d{2,3})"
+        weight_match = re.search(weight_pattern, extracted_text, re.IGNORECASE)
+        weight = weight_match.group(1) if weight_match else None
 
         doc = frappe.get_doc("Purchase Receipt", docname)
         item = next((i for i in doc.items if i.idx == item_idx), None)
