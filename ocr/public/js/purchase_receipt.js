@@ -102,11 +102,13 @@ frappe.ui.form.on('Purchase Receipt Item', {
 
                         console.log("Fields updated successfully.");
                         frm.refresh_field("items"); // Refresh the child table
+                        frm.reload_doc();
                     } else {
                         frappe.msgprint(__('Error: ' + r.message.error));
                     }
                 }
             });
+            await frm.reload_doc();
         } catch (error) {
             console.error("Error saving form or calling API:", error);
             frappe.msgprint(__('There was an error processing the extraction. Please try again.'));
