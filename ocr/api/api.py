@@ -1,13 +1,14 @@
-import pytesseract
+import json
 import re
 import frappe
+from google.cloud import vision
 from frappe.utils.file_manager import get_file_path
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image
 
 @frappe.whitelist()
 def extract_item_level_data(docname, item_idx):
     try:
-        # Fetch the Purchase Receipt document
+        # Fetch Purchase Receipt document
         doc = frappe.get_doc("Purchase Receipt", docname)
         item_idx = int(item_idx)
         item = next((i for i in doc.items if i.idx == item_idx), None)
@@ -21,28 +22,26 @@ def extract_item_level_data(docname, item_idx):
 
         file_path = get_file_path(file_url)
 
-        # 🔹 Enhanced Image Processing for Camera Captured Images
-        with Image.open(file_path) as img:
-            img = img.convert("L")  # Convert to grayscale
-            img = img.filter(ImageFilter.MedianFilter(size=3))  # Reduce noise
-            img = img.filter(ImageFilter.SHARPEN)  # Sharpen the text
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2.5)  # Boost contrast for better OCR
-            img = img.resize((1200, 1200))  # Resize for consistent OCR accuracy
+        # 🔹 Load Google Vision Credentials
+        google_credentials = json.loads(frappe.conf.get("google_application_credentials"))
 
-        # 🔹 OCR Extraction Using Different Methods
-        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:.()/ABCDEFGHIJKLMNOPQRSTUVWXYZ '
+        # 🔹 Initialize Google Vision API Client
+        client = vision.ImageAnnotatorClient.from_service_account_info(google_credentials)
 
-        extracted_text = pytesseract.image_to_string(img, config=custom_config)  # Standard OCR
-        ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)  # Detailed Data
-        ocr_boxes = pytesseract.image_to_boxes(img)  # Bounding Boxes of Characters
-        ocr_osd = pytesseract.image_to_osd(img)  # Orientation and Script Detection
+        # 🔹 Read the image
+        with open(file_path, "rb") as image_file:
+            content = image_file.read()
 
-        # 🔹 Log Raw Data from All Methods
-        frappe.logger().debug(f"OCR Text (image_to_string): {extracted_text}")
-        frappe.logger().debug(f"OCR Data (image_to_data): {ocr_data}")
-        frappe.logger().debug(f"OCR Boxes (image_to_boxes): {ocr_boxes}")
-        frappe.logger().debug(f"OCR OSD (image_to_osd): {ocr_osd}")
+        image = vision.Image(content=content)
+
+        # 🔹 Perform OCR using Google Vision
+        response = client.text_detection(image=image)
+        texts = response.text_annotations
+
+        if not texts:
+            return {"success": False, "error": "No text detected."}
+
+        extracted_text = texts[0].description
 
         # 🔹 Extract Lot No.
         lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
@@ -88,15 +87,13 @@ def extract_item_level_data(docname, item_idx):
             "lot_no": lot_no,
             "reel_no": reel_no,
             "qty": weight,
-            "raw_text": extracted_text,
-            "ocr_data": ocr_data,
-            "ocr_boxes": ocr_boxes,
-            "ocr_osd": ocr_osd
+            "raw_text": extracted_text
         }
 
     except Exception as e:
         frappe.log_error(f"OCR Error: {str(e)}\nRaw Text: {extracted_text}", "OCR Processing Error")
         return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
+
 
 # import pytesseract
 # import re
