@@ -8,6 +8,7 @@ requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
+     "google-cloud-vision~=3.5.0"
      # "frappe~=15.0.0" # Installed and managed by bench.
 ]
 
@@ -20,10 +21,4 @@ build-backend = "flit_core.buildapi"
 # package_name = "~=1.1.0"
 # APT dependencies for the app
 [deploy.dependencies.apt]
-packages = [
-    "tesseract-ocr",
-    "libtesseract-dev",  # Add this if required
-    "libjpeg-dev",
-    "libpng-dev"
-    
-]
+packages = []
