@@ -108,7 +108,7 @@ frappe.ui.form.on('Purchase Receipt Item', {
                     }
                 }
             });
-            await frm.reload_doc();
+            // await frm.reload_doc();
         } catch (error) {
             console.error("Error saving form or calling API:", error);
             frappe.msgprint(__('There was an error processing the extraction. Please try again.'));
