@@ -4,6 +4,13 @@ import frappe
 from google.cloud import vision
 from frappe.utils.file_manager import get_file_path
 
+def log_debug(section_num, content):
+    """Helper function to log smaller chunks"""
+    try:
+        frappe.log_error(f"Section {section_num}: First 100 chars - {content[:100]}", f"OCR Debug Section {section_num}")
+    except:
+        pass
+
 @frappe.whitelist()
 def extract_document_data(docname, file_url):
     try:
@@ -29,7 +36,6 @@ def extract_document_data(docname, file_url):
         doc = frappe.get_doc("Purchase Receipt", docname)
         
         # Extract product sections
-        # First, get all lines
         lines = extracted_text.split('\n')
         product_sections = []
         current_section = []
@@ -39,7 +45,7 @@ def extract_document_data(docname, file_url):
             line = lines[i].strip()
             next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
             
-            # Check if this is a product line (contains CREPE TISSUE)
+            # Check if this is a product line
             if "CREPE TISSUE" in line:
                 # If we have a previous section, save it
                 if current_section:
@@ -72,16 +78,15 @@ def extract_document_data(docname, file_url):
         if current_section:
             product_sections.append("\n".join(current_section))
 
-        # For debugging
-        frappe.log_error(f"Found {len(product_sections)} product sections:\n" + 
-                        "\n---SECTION---\n".join(product_sections))
+        # Log each section separately
+        for idx, section in enumerate(product_sections, 1):
+            log_debug(idx, section)
         
         # Process each original item from Purchase Receipt
         new_items = []
-        processed_items = set()  # Keep track of processed items
+        processed_items = set()
 
         for item in doc.items:
-            # Skip if we've already processed this item description
             if item.description in processed_items:
                 continue
                 
@@ -97,19 +102,19 @@ def extract_document_data(docname, file_url):
                 section_desc = re.sub(r'\s+', ' ', section_desc)
                 item_desc = re.sub(r'\s+', ' ', item_desc)
                 
-                # Log matching attempts for debugging
-                frappe.log_error(f"Comparing:\nItem: {item_desc}\nSection: {section_desc}")
+                # Log matching attempt (shortened)
+                log_debug("Match", f"Item: {item_desc[:50]} vs Section: {section_desc[:50]}")
                 
                 if item_desc in section_desc or section_desc in item_desc:
                     matching_section = section
                     break
             
             if matching_section:
-                # Extract lot numbers and their positions
-                lot_matches = re.finditer(r"(\d{6})\s+\d+\s+(\d{8})\s+(\d+\.?\d*)", matching_section)
+                # Extract lot numbers and their positions using the updated pattern
+                data_pattern = r"(\d{6})\s+\d+\s+(\d{8})\s+(\d+\.?\d*)"
+                matches = list(re.finditer(data_pattern, matching_section))
                 
-                # Create new rows for each BSR number
-                for match in lot_matches:
+                for match in matches:
                     lot_no = match.group(1)
                     bsr_no = match.group(2)
                     weight = match.group(3)
@@ -151,12 +156,14 @@ def extract_document_data(docname, file_url):
                 "rows_count": len(new_items)
             }
         else:
+            # Log what items we tried to match
+            for item in doc.items:
+                log_debug("No Match", f"Failed to match item: {item.description[:50]}")
             return {
                 "success": False,
                 "error": "No matching products found in the image"
             }
         
     except Exception as e:
-        frappe.log_error(f"Document OCR Error: {str(e)}\nRaw Text: {extracted_text if 'extracted_text' in locals() else 'No text extracted'}", 
-                        "Document OCR Processing Error")
+        frappe.log_error(str(e)[:130], "OCR Processing Error")  # Truncate error message
         return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
