@@ -3,7 +3,6 @@ import re
 import frappe
 from google.cloud import vision
 from frappe.utils.file_manager import get_file_path
-from PIL import Image
 
 @frappe.whitelist()
 def extract_item_level_data(docname, item_idx):
@@ -15,61 +14,59 @@ def extract_item_level_data(docname, item_idx):
         
         if not item:
             return {"success": False, "error": "Item not found."}
-
+        
         file_url = item.custom_attach_image
         if not file_url:
             return {"success": False, "error": "Please upload an image before extracting data."}
-
+            
         file_path = get_file_path(file_url)
-
-        # 🔹 Load Google Vision Credentials
+        
+        # Load Google Vision Credentials
         google_credentials = json.loads(frappe.conf.get("google_application_credentials"))
-
-        # 🔹 Initialize Google Vision API Client
+        # Initialize Google Vision API Client
         client = vision.ImageAnnotatorClient.from_service_account_info(google_credentials)
-
-        # 🔹 Read the image
+        
+        # Read the image
         with open(file_path, "rb") as image_file:
             content = image_file.read()
-
         image = vision.Image(content=content)
-
-        # 🔹 Perform OCR using Google Vision
+        
+        # Perform OCR using Google Vision
         response = client.text_detection(image=image)
         texts = response.text_annotations
-
+        
         if not texts:
             return {"success": False, "error": "No text detected."}
-
+            
         extracted_text = texts[0].description
-
-        # 🔹 Extract Lot No.
-        lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
+        
+        # Extract Lot No. - Look for 6-digit number after "Credit"
+        lot_pattern = re.search(r"Credit.*?(\d{6})", extracted_text, re.IGNORECASE | re.DOTALL)
         lot_no = lot_pattern.group(1) if lot_pattern else None
-
-        # Fallback: Find first 6-7 digit number in the text
+        
+        # Fallback: Find first 6-digit number in the text if not found after "Credit"
         if not lot_no:
-            lot_fallback = re.findall(r"\b\d{6,7}\b", extracted_text)
+            lot_fallback = re.findall(r"\b\d{6}\b", extracted_text)
             lot_no = lot_fallback[0] if lot_fallback else None
-
-        # 🔹 Extract Reel No.
+            
+        # Extract Reel No.
         reel_pattern = re.search(r"REEL\s*No\.\s*:\s*(\d{3}\s*\d{5})", extracted_text, re.IGNORECASE)
         reel_no = reel_pattern.group(1).replace(" ", "") if reel_pattern else None
-
+        
         # Fallback: Find first 8-9 digit number
         if not reel_no:
             reel_fallback = re.findall(r"\b\d{8,9}\b", extracted_text)
             reel_no = reel_fallback[0] if reel_fallback else None
-
-        # 🔹 Extract Weight (Wt in Kgs)
+            
+        # Extract Weight (Wt in Kgs)
         weight_pattern = re.search(r"Wt\s*\(In\s*Kgs\)\s*:\s*(\d{2,3})", extracted_text, re.IGNORECASE)
         weight = weight_pattern.group(1) if weight_pattern else None
-
+        
         # Fallback: Extract last 2-3 digit number
         if not weight:
             weight_fallback = re.findall(r"\b\d{2,3}\b", extracted_text)
             weight = weight_fallback[-1] if weight_fallback else None
-
+            
         # Update document fields
         if lot_no:
             item.custom_lot_no = lot_no
@@ -79,9 +76,9 @@ def extract_item_level_data(docname, item_idx):
             item.qty = float(weight)
             item.received_qty = float(weight)
             item.rejected_qty = 0
-
+            
         doc.save(ignore_version=True)
-
+        
         return {
             "success": True,
             "lot_no": lot_no,
@@ -89,122 +86,100 @@ def extract_item_level_data(docname, item_idx):
             "qty": weight,
             "raw_text": extracted_text
         }
-
+        
     except Exception as e:
-        frappe.log_error(f"OCR Error: {str(e)}\nRaw Text: {extracted_text}", "OCR Processing Error")
+        frappe.log_error(f"OCR Error: {str(e)}\nRaw Text: {extracted_text if 'extracted_text' in locals() else 'No text extracted'}", 
+                        "OCR Processing Error")
         return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
 
-
-# import pytesseract
-# import re
-# import frappe
-# from frappe.utils.file_manager import get_file_path
-# from PIL import Image, ImageEnhance, ImageFilter
-
-# @frappe.whitelist()
-# def extract_item_level_data(docname, item_idx):
-#     try:
-#         # Fetch the Purchase Receipt document
-#         doc = frappe.get_doc("Purchase Receipt", docname)
-#         item_idx = int(item_idx)
-#         item = next((i for i in doc.items if i.idx == item_idx), None)
+@frappe.whitelist()
+def extract_document_data(docname, file_url):
+    try:
+        file_path = get_file_path(file_url)
+        # Initialize Google Vision client
+        google_credentials = json.loads(frappe.conf.get("google_application_credentials"))
+        client = vision.ImageAnnotatorClient.from_service_account_info(google_credentials)
         
-#         if not item:
-#             return {"success": False, "error": "Item not found."}
-
-#         file_url = item.custom_attach_image
-#         if not file_url:
-#             return {"success": False, "error": "Please upload an image before extracting data."}
-
-#         file_path = get_file_path(file_url)
-
-#         #  Enhanced Image Processing
-#         with Image.open(file_path) as img:
-#             img = img.convert("L")  # Convert to grayscale
-#             img = img.filter(ImageFilter.MedianFilter(size=3))  # Reduce noise
-#             img = img.filter(ImageFilter.SHARPEN)  # Sharpen text
-#             enhancer = ImageEnhance.Contrast(img)
-#             img = enhancer.enhance(2.5)  # Boost contrast
-#             img = img.resize((1600, 1600))  # Resize for better OCR accuracy
-
-#         # Custom Tesseract Configuration
-#         custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:.()/ABCDEFGHIJKLMNOPQRSTUVWXYZ '
+        # Read the image
+        with open(file_path, "rb") as image_file:
+            content = image_file.read()
+        image = vision.Image(content=content)
         
-#         # Initialize variables
-#         lot_no, reel_no, weight = None, None, None
-
-#         ###  **1. Try `image_to_string()` First (Full Text OCR)**
-#         full_text = pytesseract.image_to_string(img, config=custom_config)
-#         frappe.logger().debug(f"OCR Full Text Output: {full_text}")
-
-#         if not lot_no:
-#             match = re.search(r'Lot\s*No\.\s*:\s*(\d{6,7})', full_text, re.IGNORECASE)
-#             lot_no = match.group(1) if match else None
+        # Perform OCR
+        response = client.text_detection(image=image)
+        texts = response.text_annotations
+        if not texts:
+            return {"success": False, "error": "No text detected."}
+            
+        extracted_text = texts[0].description
         
-#         if not reel_no:
-#             match = re.search(r'REEL\s*No\.\s*:\s*(\d{3}\s*\d{5})', full_text, re.IGNORECASE)
-#             reel_no = match.group(1) if match else None
+        # Extract all Lot No. and their positions - Look for 6-digit numbers after "Credit"
+        lot_entries = re.finditer(r"Credit.*?(\d{6})", extracted_text, re.IGNORECASE | re.DOTALL)
+        lot_positions = [(m.start(), m.group(1)) for m in lot_entries]
+
+        # Extract all BSR numbers and weights with their positions
+        reel_weight_entries = re.finditer(r'(\d{8})\s+(\d{2,3}(?:\.\d{0,2})?)', extracted_text)
+        reel_weight_positions = [(m.start(), m.group(1), m.group(2)) for m in reel_weight_entries]
+
+        # Sort positions
+        lot_positions.sort()
+        reel_weight_positions.sort()
+
+        # Assign Lot No. to each BSR No. and weight
+        current_lot_no = None
+        rows = []
+        for rw_start, reel_no, weight in reel_weight_positions:
+            # Find the latest Lot No. before the current BSR No. and weight
+            for lot_start, lot_no in lot_positions:
+                if lot_start < rw_start:
+                    current_lot_no = lot_no
+                else:
+                    break
+            rows.append((current_lot_no, reel_no, weight))
+
+        # Get the document
+        doc = frappe.get_doc("Purchase Receipt", docname)
         
-#         if not weight:
-#             match = re.search(r'Wt\s*\(In\s*Kgs\)\s*:\s*(\d{2,3})', full_text, re.IGNORECASE)
-#             weight = match.group(1) if match else None
-
-#         ###  **2. If Any Field is Missing, Use `image_to_data()` (Word-Based OCR)**
-#         if not lot_no or not reel_no or not weight:
-#             ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-#             words = [w.strip() for w in ocr_data['text'] if w.strip()]
-#             frappe.logger().debug(f"OCR Extracted Words: {words}")
-
-#             for i, word in enumerate(words):
-#                 if not lot_no and "lot" in word.lower() and i + 1 < len(words):
-#                     lot_no = words[i + 1] if words[i + 1].isdigit() else lot_no
-#                 if not reel_no and "reel" in word.lower() and i + 1 < len(words):
-#                     reel_no = words[i + 1].replace(" ", "") if words[i + 1].isdigit() else reel_no
-#                 if not weight and ("wt" in word.lower() or "kgs" in word.lower()) and i + 1 < len(words):
-#                     possible_weight = words[i + 1]
-#                     if re.match(r"^\d+(\.\d+)?$", possible_weight):  # Allow decimal values
-#                         weight = possible_weight
-
-#         ###  **3. If Data Still Missing, Apply Alternative OCR Settings**
-#         if not lot_no or not reel_no or not weight:
-#             alternative_config = r'--oem 3 --psm 11'  # Sparse text mode
-#             alt_text = pytesseract.image_to_string(img, config=alternative_config)
-#             frappe.logger().debug(f"Alternative OCR Output: {alt_text}")
-
-#             if not lot_no:
-#                 match = re.search(r'Lot\s*No[:\-]?\s*(\d+)', alt_text, re.IGNORECASE)
-#                 lot_no = match.group(1) if match else lot_no
-
-#             if not reel_no:
-#                 match = re.search(r'REEL\s*No[:\-]?\s*(\d+)', alt_text, re.IGNORECASE)
-#                 reel_no = match.group(1) if match else reel_no
-
-#             if not weight:
-#                 match = re.search(r'(\d+(\.\d+)?)\s*Kgs', alt_text, re.IGNORECASE)
-#                 weight = match.group(1) if match else weight
-
-#         ### 🔹 **Final Validations & Document Update**
-#         if lot_no:
-#             item.custom_lot_no = lot_no
-#         if reel_no:
-#             item.custom_reel_no = reel_no
-#         if weight:
-#             item.qty = float(weight)
-#             item.received_qty = float(weight)
-#             item.rejected_qty = 0
-
-#         doc.save(ignore_version=True)
-
-#         frappe.logger().debug(f"Extracted: Lot={lot_no}, Reel={reel_no}, Weight={weight}")
-
-#         return {
-#             "success": True,
-#             "lot_no": lot_no,
-#             "reel_no": reel_no,
-#             "qty": weight,
-#         }
-
-#     except Exception as e:
-#         frappe.log_error(f"OCR Error: {str(e)}", "OCR Processing Error")
-#         return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
-
+        # Store template row data before clearing
+        template_data = None
+        if doc.items:
+            template_data = {
+                "item_code": doc.items[0].item_code,
+                "item_name": doc.items[0].item_name,
+                "description": doc.items[0].description,
+                "uom": doc.items[0].uom,
+                "warehouse": doc.items[0].warehouse
+            }
+        
+        # Clear existing items
+        doc.items = []
+        
+        # Add all extracted rows
+        for lot_no, reel_no, weight in rows:
+            row_data = {
+                "custom_lot_no": lot_no,
+                "custom_reel_no": reel_no,
+                "qty": float(weight),
+                "received_qty": float(weight),
+                "accepted_qty": float(weight),
+                "rejected_qty": 0
+            }
+            
+            # Add template data if available
+            if template_data:
+                row_data.update(template_data)
+                
+            doc.append("items", row_data)
+        
+        doc.save(ignore_version=True)
+        
+        return {
+            "success": True,
+            "message": f"Successfully created {len(rows)} rows with data",
+            "rows_count": len(rows)
+        }
+        
+    except Exception as e:
+        frappe.log_error(f"Document OCR Error: {str(e)}\nRaw Text: {extracted_text if 'extracted_text' in locals() else 'No text extracted'}", 
+                        "Document OCR Processing Error")
+        return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
