@@ -29,19 +29,53 @@ def extract_document_data(docname, file_url):
         doc = frappe.get_doc("Purchase Receipt", docname)
         
         # Extract product sections
-        # Split text by product patterns to get sections
+        # First, get all lines
+        lines = extracted_text.split('\n')
         product_sections = []
-        current_section = ""
-        for line in extracted_text.split('\n'):
-            if "CREPE TISSUE" in line and "Credit" in line:
+        current_section = []
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            
+            # Check if this is a product line (contains CREPE TISSUE)
+            if "CREPE TISSUE" in line:
+                # If we have a previous section, save it
                 if current_section:
-                    product_sections.append(current_section)
-                current_section = line + "\n"
+                    product_sections.append("\n".join(current_section))
+                    current_section = []
+                
+                # Add product line
+                current_section.append(line)
+                
+                # Add next line if it contains "Credit"
+                if "Credit" in next_line:
+                    current_section.append(next_line)
+                    i += 2
+                else:
+                    i += 1
+                
+                # Continue collecting data until next product or end
+                while i < len(lines):
+                    next_line = lines[i].strip()
+                    if "CREPE TISSUE" in next_line:
+                        break
+                    if next_line:  # Only add non-empty lines
+                        current_section.append(next_line)
+                    i += 1
+                i -= 1  # Adjust for next iteration
             else:
-                current_section += line + "\n"
+                i += 1
+        
+        # Add the last section if exists
         if current_section:
-            product_sections.append(current_section)
+            product_sections.append("\n".join(current_section))
 
+        # For debugging
+        frappe.log_error(f"Found {len(product_sections)} product sections:\n" + 
+                        "\n---SECTION---\n".join(product_sections))
+        
         # Process each original item from Purchase Receipt
         new_items = []
         processed_items = set()  # Keep track of processed items
@@ -54,9 +88,17 @@ def extract_document_data(docname, file_url):
             # Find matching product section
             matching_section = None
             for section in product_sections:
+                # Get the product name from the first two lines of the section
+                section_lines = section.split('\n')[:2]
+                section_desc = ' '.join(section_lines).strip()
+                item_desc = item.description.strip()
+                
                 # Clean and normalize descriptions for matching
-                section_desc = re.sub(r'\s+', ' ', section.split('\n')[0].strip())
-                item_desc = re.sub(r'\s+', ' ', item.description.strip())
+                section_desc = re.sub(r'\s+', ' ', section_desc)
+                item_desc = re.sub(r'\s+', ' ', item_desc)
+                
+                # Log matching attempts for debugging
+                frappe.log_error(f"Comparing:\nItem: {item_desc}\nSection: {section_desc}")
                 
                 if item_desc in section_desc or section_desc in item_desc:
                     matching_section = section
