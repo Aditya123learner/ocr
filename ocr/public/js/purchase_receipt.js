@@ -70,43 +70,45 @@ frappe.ui.form.on('Purchase Receipt', {
                 return;
             }
             
-            new frappe.ui.FileUploader({
-                doctype: 'Purchase Receipt',
-                docname: frm.doc.name,
-                folder: 'Home/Attachments',
-                on_success: (file_doc) => {
-                    // Show a loading indicator
-                    frappe.show_alert({
-                        message: __('Processing document, please wait...'),
-                        indicator: 'blue'
-                    });
-                    
-                    frappe.call({
-                        method: 'ocr.api.api.extract_document_data',
-                        args: {
-                            docname: frm.doc.name,
-                            file_url: file_doc.file_url
-                        },
-                        callback: function(r) {
-                            if (r.message.success) {
-                                frappe.show_alert({
-                                    message: __(`Successfully filled ${r.message.rows_count} rows with data`),
-                                    indicator: 'green'
-                                });
-                                
-                                // Reload the document to show updated data
-                                frm.reload_doc();
-                            } else {
-                                frappe.msgprint({
-                                    title: __('Error'),
-                                    indicator: 'red',
-                                    message: __('Error: ' + r.message.error)
-                                });
-                            }
+            // Create a dialog for item selection
+            let item_options = frm.doc.items
+                .filter(item => !item.custom_lot_no && !item.custom_reel_no)
+                .map(item => ({
+                    value: item.idx,
+                    label: `${item.item_code} - ${item.item_name} (Row ${item.idx})`
+                }));
+                
+            if (item_options.length === 0) {
+                frappe.msgprint(__('All items have already been processed.'));
+                return;
+            }
+
+            let d = new frappe.ui.Dialog({
+                title: 'Select Item to Process',
+                fields: [
+                    {
+                        label: 'Select Item',
+                        fieldname: 'selected_item',
+                        fieldtype: 'Select',
+                        options: item_options,
+                        reqd: 1
+                    }
+                ],
+                primary_action_label: 'Upload Image',
+                primary_action(values) {
+                    d.hide();
+                    // After selecting item, show file uploader
+                    new frappe.ui.FileUploader({
+                        doctype: 'Purchase Receipt',
+                        docname: frm.doc.name,
+                        folder: 'Home/Attachments',
+                        on_success: (file_doc) => {
+                            processItemDocument(frm, values.selected_item, file_doc.file_url);
                         }
                     });
                 }
             });
+            d.show();
         });
         
         // Add button for generating multiple rows
@@ -137,6 +139,58 @@ frappe.ui.form.on('Purchase Receipt', {
         });
     }
 });
+
+// Function to process document for specific item
+function processItemDocument(frm, item_idx, file_url) {
+    frappe.show_alert({
+        message: __('Processing document, please wait...'),
+        indicator: 'blue'
+    });
+    
+    frappe.call({
+        method: 'ocr.api.api.extract_item_data_from_document',
+        args: {
+            docname: frm.doc.name,
+            item_idx: item_idx,
+            file_url: file_url
+        },
+        callback: function(r) {
+            if (r.message.success) {
+                let msg = __(`Successfully processed ${r.message.rows_processed} rows`);
+                
+                // If there are remaining items, add that to the message
+                if (r.message.remaining_items > 0) {
+                    msg += __(`\nThere are ${r.message.remaining_items} more rows of this item type to process.`);
+                }
+                
+                frappe.show_alert({
+                    message: msg,
+                    indicator: 'green'
+                });
+                
+                // Reload the document to show updated data
+                frm.reload_doc();
+                
+                // If there are remaining items, ask if user wants to process another image
+                if (r.message.remaining_items > 0) {
+                    frappe.confirm(
+                        __('Would you like to process another image for the remaining rows?'),
+                        () => {
+                            // Yes - trigger the button click again
+                            frm.custom_buttons['Fill All Rows from Document'][0].click();
+                        }
+                    );
+                }
+            } else {
+                frappe.msgprint({
+                    title: __('Error'),
+                    indicator: 'red',
+                    message: __('Error: ' + r.message.error)
+                });
+            }
+        }
+    });
+}
 
 // Function to generate multiple rows
 function generateMultipleRows(frm, numRows) {
@@ -183,6 +237,7 @@ function generateMultipleRows(frm, numRows) {
         });
 }
 
+// Keep the existing Purchase Receipt Item form events
 frappe.ui.form.on('Purchase Receipt Item', {
     custom_attach_image: async function(frm, cdt, cdn) {
         const row = locals[cdt][cdn];
