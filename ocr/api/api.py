@@ -13,7 +13,7 @@ def extract_item_data_from_document(docname, item_idx, file_url):
         # Convert item_idx to integer
         item_idx = int(item_idx)
         
-        # Get the template item from current items list
+        # Get the template item
         template_item = next((item for item in doc.items if item.idx == item_idx), None)
         if not template_item:
             return {"success": False, "error": "Selected item not found in document"}
@@ -51,7 +51,7 @@ def extract_item_data_from_document(docname, item_idx, file_url):
 
         # Associate Lot No. with BSR No. and weight
         current_lot_no = None
-        rows = []
+        rows_data = []
         for rw_start, reel_no, weight in reel_weight_positions:
             # Find the latest Lot No. before current BSR No.
             for lot_start, lot_no in lot_positions:
@@ -59,44 +59,42 @@ def extract_item_data_from_document(docname, item_idx, file_url):
                     current_lot_no = lot_no
                 else:
                     break
-            rows.append((current_lot_no, reel_no, weight))
+            rows_data.append((current_lot_no, reel_no, weight))
 
-        # Get all indices of items with same item_code that haven't been processed yet
-        # (items without lot_no or reel_no)
-        pending_items = [
-            item.idx for item in doc.items 
-            if (item.item_code == template_item.item_code and 
-                not (item.custom_lot_no or item.custom_reel_no))
-        ]
+        # Remove only the selected template row
+        doc.items = [item for item in doc.items if item.idx != item_idx]
         
-        # Calculate how many rows we can fill with current data
-        rows_to_process = min(len(rows), len(pending_items))
+        # Get template data from the selected item
+        template_data = {
+            'item_code': template_item.item_code,
+            'item_name': template_item.item_name,
+            'description': template_item.description,
+            'uom': template_item.uom,
+            'warehouse': template_item.warehouse,
+        }
         
-        # Update only the required number of rows
-        for i in range(rows_to_process):
-            item_to_update = next(
-                (item for item in doc.items if item.idx == pending_items[i]), 
-                None
-            )
-            if item_to_update:
-                lot_no, reel_no, weight = rows[i]
-                item_to_update.custom_lot_no = lot_no
-                item_to_update.custom_reel_no = reel_no
-                item_to_update.qty = float(weight)
-                item_to_update.received_qty = float(weight)
-                item_to_update.accepted_qty = float(weight)
-                item_to_update.rejected_qty = 0
+        # Add new rows for each reel number at the end of the items table
+        for lot_no, reel_no, weight in rows_data:
+            row_data = template_data.copy()
+            row_data.update({
+                'custom_lot_no': lot_no,
+                'custom_reel_no': reel_no,
+                'qty': float(weight),
+                'received_qty': float(weight),
+                'accepted_qty': float(weight),
+                'rejected_qty': 0
+            })
+            doc.append('items', row_data)
+        
+        # Sort items based on item_code to keep related items together
+        doc.items.sort(key=lambda x: x.item_code)
         
         doc.save(ignore_version=True)
         
-        remaining_items = len(pending_items) - rows_to_process
-        
         return {
             "success": True,
-            "message": f"Successfully processed {rows_to_process} rows for selected item",
-            "rows_processed": rows_to_process,
-            "remaining_items": remaining_items,
-            "remaining_indices": pending_items[rows_to_process:] if remaining_items > 0 else []
+            "message": f"Successfully created {len(rows_data)} rows for selected item",
+            "rows_count": len(rows_data)
         }
         
     except Exception as e:
