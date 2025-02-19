@@ -68,11 +68,11 @@ def extract_item_data_from_document(docname, item_idx, file_url):
                     break
             rows_data.append((current_lot_no, reel_no, weight))
 
-        # Create a new list of items, preserving order
-        new_items = []
+        # Store items that come after the template position
+        items_after = doc.items[template_position + 1:]
         
-        # Add items before the template position
-        new_items.extend(doc.items[:template_position])
+        # Remove items from template position onwards
+        doc.items = doc.items[:template_position]
         
         # Get template data from the selected item
         template_data = {
@@ -94,15 +94,23 @@ def extract_item_data_from_document(docname, item_idx, file_url):
                 'accepted_qty': float(weight),
                 'rejected_qty': 0
             })
-            new_row = frappe.get_doc({"doctype": "Purchase Receipt Item"})
-            new_row.update(row_data)
-            new_items.append(new_row)
+            doc.append('items', row_data)
         
-        # Add remaining items after the extracted data
-        new_items.extend(doc.items[template_position + 1:])
-        
-        # Replace items in the document
-        doc.items = new_items
+        # Add back the remaining items
+        for item in items_after:
+            doc.append('items', {
+                'item_code': item.item_code,
+                'item_name': item.item_name,
+                'description': item.description,
+                'uom': item.uom,
+                'warehouse': item.warehouse,
+                'custom_lot_no': item.custom_lot_no if hasattr(item, 'custom_lot_no') else None,
+                'custom_reel_no': item.custom_reel_no if hasattr(item, 'custom_reel_no') else None,
+                'qty': item.qty,
+                'received_qty': item.received_qty,
+                'accepted_qty': item.accepted_qty,
+                'rejected_qty': item.rejected_qty
+            })
         
         # Save the document
         doc.save(ignore_version=True)
