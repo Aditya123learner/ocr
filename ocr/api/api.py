@@ -13,8 +13,15 @@ def extract_item_data_from_document(docname, item_idx, file_url):
         # Convert item_idx to integer
         item_idx = int(item_idx)
         
-        # Get the template item
-        template_item = next((item for item in doc.items if item.idx == item_idx), None)
+        # Get the template item and its position
+        template_item = None
+        template_position = 0
+        for i, item in enumerate(doc.items):
+            if item.idx == item_idx:
+                template_item = item
+                template_position = i
+                break
+                
         if not template_item:
             return {"success": False, "error": "Selected item not found in document"}
             
@@ -61,8 +68,11 @@ def extract_item_data_from_document(docname, item_idx, file_url):
                     break
             rows_data.append((current_lot_no, reel_no, weight))
 
-        # Remove only the selected template row
-        doc.items = [item for item in doc.items if item.idx != item_idx]
+        # Create a new list of items, preserving order
+        new_items = []
+        
+        # Add items before the template position
+        new_items.extend(doc.items[:template_position])
         
         # Get template data from the selected item
         template_data = {
@@ -73,7 +83,7 @@ def extract_item_data_from_document(docname, item_idx, file_url):
             'warehouse': template_item.warehouse,
         }
         
-        # Add new rows for each reel number at the end of the items table
+        # Add new rows for each reel number at the template position
         for lot_no, reel_no, weight in rows_data:
             row_data = template_data.copy()
             row_data.update({
@@ -84,11 +94,17 @@ def extract_item_data_from_document(docname, item_idx, file_url):
                 'accepted_qty': float(weight),
                 'rejected_qty': 0
             })
-            doc.append('items', row_data)
+            new_row = frappe.get_doc({"doctype": "Purchase Receipt Item"})
+            new_row.update(row_data)
+            new_items.append(new_row)
         
-        # Sort items based on item_code to keep related items together
-        doc.items.sort(key=lambda x: x.item_code)
+        # Add remaining items after the extracted data
+        new_items.extend(doc.items[template_position + 1:])
         
+        # Replace items in the document
+        doc.items = new_items
+        
+        # Save the document
         doc.save(ignore_version=True)
         
         return {
