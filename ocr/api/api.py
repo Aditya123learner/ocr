@@ -80,7 +80,7 @@ def extract_item_data_from_document(docname, item_idx, file_url):
             'item_name': template_item.item_name,
             'description': template_item.description,
             'uom': template_item.uom,
-            'warehouse': template_item.warehouse,
+            'warehouse': template_item.warehouse
         }
         
         # Add new rows for each reel number at the template position
@@ -91,26 +91,25 @@ def extract_item_data_from_document(docname, item_idx, file_url):
                 'custom_reel_no': reel_no,
                 'qty': float(weight),
                 'received_qty': float(weight),
-                'accepted_qty': float(weight),
                 'rejected_qty': 0
             })
             doc.append('items', row_data)
         
         # Add back the remaining items
         for item in items_after:
-            doc.append('items', {
+            item_data = {
                 'item_code': item.item_code,
                 'item_name': item.item_name,
                 'description': item.description,
                 'uom': item.uom,
                 'warehouse': item.warehouse,
-                'custom_lot_no': item.custom_lot_no if hasattr(item, 'custom_lot_no') else None,
-                'custom_reel_no': item.custom_reel_no if hasattr(item, 'custom_reel_no') else None,
                 'qty': item.qty,
                 'received_qty': item.received_qty,
-                'accepted_qty': item.accepted_qty,
-                'rejected_qty': item.rejected_qty
-            })
+                'rejected_qty': item.rejected_qty,
+                'custom_lot_no': item.custom_lot_no if hasattr(item, 'custom_lot_no') else None,
+                'custom_reel_no': item.custom_reel_no if hasattr(item, 'custom_reel_no') else None
+            }
+            doc.append('items', item_data)
         
         # Save the document
         doc.save(ignore_version=True)
