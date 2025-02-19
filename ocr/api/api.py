@@ -4,17 +4,22 @@ import frappe
 from google.cloud import vision
 from frappe.utils.file_manager import get_file_path
 
-def log_debug(section_num, content):
-    """Helper function to log smaller chunks"""
-    try:
-        frappe.log_error(f"Section {section_num}: First 100 chars - {content[:100]}", f"OCR Debug Section {section_num}")
-    except:
-        pass
-
 @frappe.whitelist()
-def extract_document_data(docname, file_url):
+def extract_item_data_from_document(docname, item_idx, file_url):
     try:
+        # Get Purchase Receipt document
+        doc = frappe.get_doc("Purchase Receipt", docname)
+        
+        # Convert item_idx to integer
+        item_idx = int(item_idx)
+        
+        # Get the template item from current items list
+        template_item = next((item for item in doc.items if item.idx == item_idx), None)
+        if not template_item:
+            return {"success": False, "error": "Selected item not found in document"}
+            
         file_path = get_file_path(file_url)
+        
         # Initialize Google Vision client
         google_credentials = json.loads(frappe.conf.get("google_application_credentials"))
         client = vision.ImageAnnotatorClient.from_service_account_info(google_credentials)
@@ -28,142 +33,73 @@ def extract_document_data(docname, file_url):
         response = client.text_detection(image=image)
         texts = response.text_annotations
         if not texts:
-            return {"success": False, "error": "No text detected."}
+            return {"success": False, "error": "No text detected"}
             
         extracted_text = texts[0].description
         
-        # Get the Purchase Receipt document
-        doc = frappe.get_doc("Purchase Receipt", docname)
-        
-        # Extract product sections
-        lines = extracted_text.split('\n')
-        product_sections = []
-        current_section = []
-        i = 0
-        
-        while i < len(lines):
-            line = lines[i].strip()
-            next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
-            
-            # Check if this is a product line
-            if "CREPE TISSUE" in line:
-                # If we have a previous section, save it
-                if current_section:
-                    product_sections.append("\n".join(current_section))
-                    current_section = []
-                
-                # Add product line
-                current_section.append(line)
-                
-                # Add next line if it contains "Credit"
-                if "Credit" in next_line:
-                    current_section.append(next_line)
-                    i += 2
+        # Extract Lot numbers and their positions
+        lot_entries = re.finditer(r"Credit.*?(\d{6})", extracted_text, re.IGNORECASE | re.DOTALL)
+        lot_positions = [(m.start(), m.group(1)) for m in lot_entries]
+
+        # Extract BSR numbers and weights
+        reel_weight_entries = re.finditer(r'(\d{8})\s+(\d{2,3}(?:\.\d{0,2})?)', extracted_text)
+        reel_weight_positions = [(m.start(), m.group(1), m.group(2)) for m in reel_weight_entries]
+
+        # Sort positions
+        lot_positions.sort()
+        reel_weight_positions.sort()
+
+        # Associate Lot No. with BSR No. and weight
+        current_lot_no = None
+        rows = []
+        for rw_start, reel_no, weight in reel_weight_positions:
+            # Find the latest Lot No. before current BSR No.
+            for lot_start, lot_no in lot_positions:
+                if lot_start < rw_start:
+                    current_lot_no = lot_no
                 else:
-                    i += 1
-                
-                # Continue collecting data until next product or end
-                while i < len(lines):
-                    next_line = lines[i].strip()
-                    if "CREPE TISSUE" in next_line:
-                        break
-                    if next_line:  # Only add non-empty lines
-                        current_section.append(next_line)
-                    i += 1
-                i -= 1  # Adjust for next iteration
-            else:
-                i += 1
-        
-        # Add the last section if exists
-        if current_section:
-            product_sections.append("\n".join(current_section))
-
-        # Log each section separately
-        for idx, section in enumerate(product_sections, 1):
-            log_debug(idx, section)
-        
-        # Process each original item from Purchase Receipt
-        new_items = []
-        processed_items = set()
-
-        for item in doc.items:
-            if item.description in processed_items:
-                continue
-                
-            # Find matching product section
-            matching_section = None
-            for section in product_sections:
-                # Get the product name from the first two lines of the section
-                section_lines = section.split('\n')[:2]
-                section_desc = ' '.join(section_lines).strip()
-                item_desc = item.description.strip()
-                
-                # Clean and normalize descriptions for matching
-                section_desc = re.sub(r'\s+', ' ', section_desc)
-                item_desc = re.sub(r'\s+', ' ', item_desc)
-                
-                # Log matching attempt (shortened)
-                log_debug("Match", f"Item: {item_desc[:50]} vs Section: {section_desc[:50]}")
-                
-                if item_desc in section_desc or section_desc in item_desc:
-                    matching_section = section
                     break
-            
-            if matching_section:
-                # Extract lot numbers and their positions using the updated pattern
-                data_pattern = r"(\d{6})\s+\d+\s+(\d{8})\s+(\d+\.?\d*)"
-                matches = list(re.finditer(data_pattern, matching_section))
-                
-                for match in matches:
-                    lot_no = match.group(1)
-                    bsr_no = match.group(2)
-                    weight = match.group(3)
-                    
-                    new_row = {
-                        "item_code": item.item_code,
-                        "item_name": item.item_name,
-                        "description": item.description,
-                        "uom": item.uom,
-                        "warehouse": item.warehouse,
-                        "custom_lot_no": lot_no,
-                        "custom_reel_no": bsr_no,
-                        "qty": float(weight),
-                        "received_qty": float(weight),
-                        "accepted_qty": float(weight),
-                        "rejected_qty": 0,
-                        "purchase_order": item.purchase_order,
-                        "purchase_order_item": item.purchase_order_item,
-                        "material_request": item.material_request,
-                        "material_request_item": item.material_request_item
-                    }
-                    new_items.append(new_row)
-                
-                processed_items.add(item.description)
+            rows.append((current_lot_no, reel_no, weight))
+
+        # Get all indices of items with same item_code that haven't been processed yet
+        # (items without lot_no or reel_no)
+        pending_items = [
+            item.idx for item in doc.items 
+            if (item.item_code == template_item.item_code and 
+                not (item.custom_lot_no or item.custom_reel_no))
+        ]
         
-        if new_items:
-            # Clear existing items
-            doc.items = []
-            
-            # Add all new items
-            for row_data in new_items:
-                doc.append("items", row_data)
-            
-            doc.save(ignore_version=True)
-            
-            return {
-                "success": True,
-                "message": f"Successfully created {len(new_items)} rows with data",
-                "rows_count": len(new_items)
-            }
-        else:
-            # Log what items we tried to match
-            for item in doc.items:
-                log_debug("No Match", f"Failed to match item: {item.description[:50]}")
-            return {
-                "success": False,
-                "error": "No matching products found in the image"
-            }
+        # Calculate how many rows we can fill with current data
+        rows_to_process = min(len(rows), len(pending_items))
+        
+        # Update only the required number of rows
+        for i in range(rows_to_process):
+            item_to_update = next(
+                (item for item in doc.items if item.idx == pending_items[i]), 
+                None
+            )
+            if item_to_update:
+                lot_no, reel_no, weight = rows[i]
+                item_to_update.custom_lot_no = lot_no
+                item_to_update.custom_reel_no = reel_no
+                item_to_update.qty = float(weight)
+                item_to_update.received_qty = float(weight)
+                item_to_update.accepted_qty = float(weight)
+                item_to_update.rejected_qty = 0
+        
+        doc.save(ignore_version=True)
+        
+        remaining_items = len(pending_items) - rows_to_process
+        
+        return {
+            "success": True,
+            "message": f"Successfully processed {rows_to_process} rows for selected item",
+            "rows_processed": rows_to_process,
+            "remaining_items": remaining_items,
+            "remaining_indices": pending_items[rows_to_process:] if remaining_items > 0 else []
+        }
         
     except Exception as e:
-        frappe.log_error(str(e)[:130], "OCR Processing Error")  # Truncate error message
+        frappe.log_error(f"Item Document OCR Error: {str(e)}\nRaw Text: {extracted_text if 'extracted_text' in locals() else 'No text extracted'}", 
+                        "Item Document OCR Processing Error")
         return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
