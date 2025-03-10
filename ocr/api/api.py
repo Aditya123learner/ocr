@@ -45,7 +45,7 @@ def extract_item_data_from_document(docname, item_idx, file_url):
         extracted_text = texts[0].description
         
         # Extract Lot numbers and their positions
-        lot_entries = re.finditer(r"Credit.*?(\d{6})", extracted_text, re.IGNORECASE | re.DOTALL)
+        lot_entries = re.finditer(r"(?:Credit|^).*?(\d{6})", extracted_text, re.IGNORECASE | re.MULTILINE)
         lot_positions = [(m.start(), m.group(1)) for m in lot_entries]
 
         # Extract BSR numbers and weights
@@ -57,22 +57,22 @@ def extract_item_data_from_document(docname, item_idx, file_url):
         reel_weight_positions.sort()
 
         # Associate Lot No. with BSR No. and weight
-        current_lot_no = None
         rows_data = []
+        current_lot_idx = 0
         for rw_start, reel_no, weight in reel_weight_positions:
-            # Find the latest Lot No. before current BSR No.
-            for lot_start, lot_no in lot_positions:
-                if lot_start < rw_start:
-                    current_lot_no = lot_no
-                else:
-                    break
-            rows_data.append((current_lot_no, reel_no, weight))
-
-        # Store items that come after the template position
-        items_after = doc.items[template_position + 1:]
+            # Find the appropriate Lot No. for this BSR
+            # Look for the closest preceding lot number, but also check if we need to move to next lot
+            if current_lot_idx < len(lot_positions) - 1 and lot_positions[current_lot_idx + 1][0] < rw_start:
+                current_lot_idx += 1
+            
+            if current_lot_idx < len(lot_positions):
+                current_lot_no = lot_positions[current_lot_idx][1]
+                rows_data.append((current_lot_no, reel_no, weight))
         
-        # Remove items from template position onwards
-        doc.items = doc.items[:template_position]
+        # Only remove the selected item, not all items from that position onward
+        items_before = doc.items[:template_position]
+        items_after = doc.items[template_position + 1:]
+        doc.items = items_before + items_after
         
         # Get template data from the selected item
         template_data = {
@@ -95,21 +95,19 @@ def extract_item_data_from_document(docname, item_idx, file_url):
             })
             doc.append('items', row_data)
         
-        # Add back the remaining items
-        for item in items_after:
-            item_data = {
-                'item_code': item.item_code,
-                'item_name': item.item_name,
-                'description': item.description,
-                'uom': item.uom,
-                'warehouse': item.warehouse,
-                'qty': item.qty,
-                'received_qty': item.received_qty,
-                'rejected_qty': item.rejected_qty,
-                'custom_lot_no': item.custom_lot_no if hasattr(item, 'custom_lot_no') else None,
-                'custom_reel_no': item.custom_reel_no if hasattr(item, 'custom_reel_no') else None
-            }
-            doc.append('items', item_data)
+        # Sort items by their original idx if available, otherwise maintain original order
+        # This helps maintain consistency in the document
+        items_with_idx = []
+        items_without_idx = []
+        
+        for item in doc.items:
+            if hasattr(item, 'idx') and item.idx:
+                items_with_idx.append(item)
+            else:
+                items_without_idx.append(item)
+                
+        items_with_idx.sort(key=lambda x: x.idx)
+        doc.items = items_with_idx + items_without_idx
         
         # Save the document
         doc.save(ignore_version=True)
