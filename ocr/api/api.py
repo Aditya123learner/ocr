@@ -68,12 +68,11 @@ def extract_item_data_from_document(docname, item_idx, file_url):
                     break
             rows_data.append((current_lot_no, reel_no, weight))
 
-        # CHANGED: Only remove the specific template item instead of all items after it
-        # Store items that come after the template position (excluding the template itself)
+        # Store items that come after the template position
         items_after = doc.items[template_position + 1:]
         
-        # Remove only the selected template item
-        doc.items = doc.items[:template_position] + doc.items[template_position + 1:]
+        # Remove items from template position onwards
+        doc.items = doc.items[:template_position]
         
         # Get template data from the selected item
         template_data = {
